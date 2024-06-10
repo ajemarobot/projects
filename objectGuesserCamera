@@ -1,0 +1,201 @@
+import cv2
+import numpy as np
+import os
+import tensorflow as tf
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input, decode_predictions
+import tkinter as tk
+from tkinter import simpledialog
+from PIL import Image, ImageTk
+
+
+model = MobileNetV2(weights='imagenet')
+
+
+class ImageClass:
+    def __init__(self, name):
+        self.name = name
+        self.images = []
+        self.features = []
+
+    def add_image(self, image):
+        self.images.append(image)
+        orb = cv2.ORB_create()
+        keypoints, descriptors = orb.detectAndCompute(image, None)
+        self.features.append(descriptors)
+
+    def remove_last_image(self):
+        if self.images:
+            self.images.pop()
+            self.features.pop()
+
+
+
+    img = cv2.resize(frame, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = np.expand_dims(img, axis=0)
+    img = preprocess_input(img)
+
+a
+    preds = model.predict(img)
+    decoded_preds = decode_predictions(preds, top=1)[0][0]
+    label = decoded_preds[1]
+    confidence = decoded_preds[2]
+    return label, confidence
+
+
+def find_best_match(frame, classes):
+    orb = cv2.ORB_create()
+    keypoints, descriptors = orb.detectAndCompute(frame, None)
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    best_match = None
+    best_score = 0
+
+    for image_class in classes:
+        for class_descriptors in image_class.features:
+            matches = bf.match(descriptors, class_descriptors)
+            if matches:
+                matches = sorted(matches, key=lambda x: x.distance)
+                score = sum(match.distance for match in matches) / len(matches)
+                if best_match is None or score < best_score:
+                    best_match = image_class.name
+                    best_score = score
+
+    return best_match, best_score
+
+
+class CameraApp:
+    def __init__(self, window, window_title):
+        self.window = window
+        self.window.title(window_title)
+        self.video_source = 0
+
+        self.vid = cv2.VideoCapture(self.video_source)
+        if not self.vid.isOpened():
+            raise ValueError("Unable to open video source", self.video_source)
+
+        self.canvas = tk.Canvas(window, width=self.vid.get(cv2.CAP_PROP_FRAME_WIDTH),
+                                height=self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.canvas.pack()
+
+        self.btn_create_class = tk.Button(window, text="Create Class", width=50, command=self.create_class)
+        self.btn_create_class.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_take_picture = tk.Button(window, text="Take Picture", width=50, command=self.take_picture)
+        self.btn_take_picture.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_remove_last = tk.Button(window, text="Remove Last Picture", width=50, command=self.remove_last_picture)
+        self.btn_remove_last.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_change_class = tk.Button(window, text="Change Class", width=50, command=self.change_class)
+        self.btn_change_class.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_print_class = tk.Button(window, text="Print Current Class", width=50, command=self.print_class)
+        self.btn_print_class.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_guess_class = tk.Button(window, text="Guess Class", width=50, command=self.guess_class)
+        self.btn_guess_class.pack(anchor=tk.CENTER, expand=True)
+
+        self.btn_quit = tk.Button(window, text="Quit", width=50, command=self.quit)
+        self.btn_quit.pack(anchor=tk.CENTER, expand=True)
+
+        self.message = tk.StringVar()
+        self.message_label = tk.Label(window, textvariable=self.message, width=50)
+        self.message_label.pack(anchor=tk.CENTER, expand=True)
+
+        self.current_class = None
+        self.classes = []
+
+        self.delay = 10
+        self.update()
+
+        self.window.protocol("WM_DELETE_WINDOW", self.quit)
+        self.window.mainloop()
+
+    def create_class(self):
+        class_name = simpledialog.askstring("Input", "Enter the name for the new class:")
+        if class_name:
+            self.current_class = ImageClass(class_name)
+            self.classes.append(self.current_class)
+            self.message.set(f"Created new class: {class_name}")
+
+    def take_picture(self):
+        if self.current_class:
+            ret, frame = self.vid.read()
+            if ret:
+                self.current_class.add_image(frame.copy())
+                self.message.set(f"Added image to class: {self.current_class.name}")
+            else:
+                self.message.set("Failed to take picture.")
+        else:
+            self.message.set("No class selected. Create a new class first.")
+
+    def remove_last_picture(self):
+        if self.current_class:
+            self.current_class.remove_last_image()
+            self.message.set(f"Removed last image from class: {self.current_class.name}")
+        else:
+            self.message.set("No class selected. Create a new class first.")
+
+    def change_class(self):
+        class_name = simpledialog.askstring("Input", "Enter the name of the class to switch to:")
+        if class_name:
+            found_class = next((cls for cls in self.classes if cls.name == class_name), None)
+            if found_class:
+                self.current_class = found_class
+                self.message.set(f"Switched to class: {self.current_class.name}")
+            else:
+                self.message.set(f"Class '{class_name}' not found.")
+
+    def print_class(self):
+        if self.current_class:
+            self.message.set(f"Current class: {self.current_class.name}")
+        else:
+            self.message.set("No class selected.")
+
+    def guess_class(self):
+        ret, frame = self.vid.read()
+        if ret:
+            best_match, best_score = find_best_match(frame, self.classes)
+            if best_match:
+                self.message.set(f"Best match: {best_match} with score: {best_score:.2f}")
+            else:
+                self.message.set("No match found.")
+        else:
+            self.message.set("Failed to capture frame.")
+
+    def update(self):
+        ret, frame = self.vid.read()
+        if ret:
+            label, confidence = identify_object(frame)
+            cv2.putText(frame, f'{label}: {confidence:.2f}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(image)
+            image = ImageTk.PhotoImage(image)
+
+            self.canvas.create_image(0, 0, image=image, anchor=tk.NW)
+            self.photo = image  
+
+        self.window.after(self.delay, self.update)
+
+    def quit(self):
+        self.vid.release()
+        self.window.destroy()
+        self.save_images()
+
+    def save_images(self):
+        if not os.path.exists('images'):
+            os.makedirs('images')
+
+        for image_class in self.classes:
+            class_dir = os.path.join('images', image_class.name)
+            if not os.path.exists(class_dir):
+                os.makedirs(class_dir)
+            for i, image in enumerate(image_class.images):
+                cv2.imwrite(os.path.join(class_dir, f'{i}.jpg'), image)
+        print("Images saved.")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = CameraApp(root, "Camera Application")
